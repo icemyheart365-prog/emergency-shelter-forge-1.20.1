@@ -83,3 +83,57 @@
 目前只能确认这是一个包含自定义 early 启动层的 NeoForge 1.21.1 项目，并且构建系统、模组元数据、事件 API 和 early 扫描机制都需要审计或迁移。尚未完成 Forge 1.20.1 的构建或运行验证。
 
 **下一项工作应是逐文件 API/资源审计，优先厘清 `ShelterLocator`、`ShelterService`、`EarlyShelter` 的 Forge 47.x 可行性。** 只有这个门槛明确后，才值得大规模修改其余 96 个主源码文件。
+
+
+## 8. README 功能范围与代码审计补充（2026-10-12）
+
+已重新读取当前 `README.md`、递归源码树，以及部分关键实现和 Mixin 配置。README 所列功能是项目目标/说明，不等同于目标 Forge 环境下已经验证的行为。
+
+### 8.1 README 中必须纳入回归测试的功能
+
+| 功能域 | README 声明的行为 | 移植时必须验证 |
+|---|---|---|
+| 启动前保护 | 缺少前置、错误版本、重复/损坏模组可被临时跳过；提供启动报告 | Forge 是否允许在扫描/依赖解析阶段实现相同行为；错误候选是否会被正确隔离 |
+| 占位数据 | 缺失模组的物品、方块、生物及玩家附加数据可保留，模组回来后恢复 | 注册表读取、NBT/codec、实体/物品/方块序列化与反序列化兼容 |
+| 避险箱 | 占位物品从玩家背包/末影箱移入玩家专属容器 | 容器注册、菜单同步、权限和服务器端权威逻辑 |
+| 运行时隔离 | 方块实体、生物、物品、区块数据、配方等异常时隔离问题部分 | Mixin 注入点、异常传播边界、原版回退语义和数据不丢失 |
+| 启动恢复 | 上次启动失败时先回滚配置，再尝试跳过问题模组 | early 与游戏内层共享状态文件的格式、写入时序和恢复幂等性 |
+| 存档/配置保护 | 备份、恢复损坏文件、减少模组前备份存档 | 路径定位、文件原子替换、备份空间与错误处理 |
+| 渲染保护 | 隔离渲染异常；必要时关闭问题光影/资源包 | 客户端专属类隔离、渲染目标方法与 Forge/Minecraft 1.20.1 对应实现 |
+| 世界生成/脚本/卡死/数据膨胀 | 隔离出错的局部操作，提供安全模式 | 注入点准确性、线程/超时处理、是否会掩盖可恢复以外的严重错误 |
+| 管理与诊断 | 命令、报告、隔离对象重试、配置恢复 | 命令注册 API、权限检查、网络同步和服务器/客户端一致性 |
+
+### 8.2 源码结构与已确认的技术事实
+
+- `src/early` 当前包含 21 个 Java 文件；`src/main/java` 当前包含 96 个 Java 文件。
+- Early 层的服务声明文件包括：
+  - `META-INF/services/cpw.mods.modlauncher.api.ITransformationService`
+  - `META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator`
+- `ShelterLocator` 实现 NeoForge 的 `IModFileCandidateLocator`，并通过 `ILaunchContext` / `IDiscoveryPipeline` 调用 `EarlyShelter.locate`。
+- `ShelterService` 实现 ModLauncher 的 `ITransformationService`，在 `transformers()` 时调用 `LaunchMonitor.afterScan()`。
+- `EarlyShelter` 的入口先运行启动分析，再尝试将 `META-INF/emergencyshelter/emergencyshelter-mod.jar` 加入发现流程；两条路径都捕获 `Throwable` 并记录错误，以避免本模组自己的早期处理阻断启动。
+- `Defense` 定义了防御性回退：自己的处理逻辑失败时，尽可能记录错误并保留原始异常/原版行为。移植不能把这些保护语义简化成无条件吞异常。
+- `WorldGuard` 使用 Forge/NeoForge 事件风格的服务端生命周期订阅，并处理世界会话标记、隔离日志与备份；其具体事件 API 需要逐项映射。
+- 三份 Mixin 配置的 `compatibilityLevel` 当前均为 `JAVA_21`；目标 Forge 1.20.1 的 Java 17 基线要求重新审视所有编译目标、Mixin 版本与注入目标，不能只修改 JSON 字符串。
+- 当前已读取的只是关键样本与完整文件路径清单，不应称为 117 个 Java 文件已完成逐行审计。
+
+### 8.3 构建工具的官方基线参考
+
+Forge 官方 ForgeGradle 6 文档使用 `net.minecraftforge.gradle` 的 6.0–6.2 版本范围，并明确 ForgeGradle 6 使用 Gradle 8。Minecraft Forge 1.20.1 的官方下载页提供 47.3.x MDK；项目应从选定的 MDK/版本配置开始对齐，而不是沿用当前 Gradle 9.2.1。参考：<https://docs.minecraftforge.net/en/fg-6.x/>、<https://files.minecraftforge.net/net/minecraftforge/forge/index_1.20.1.html>。
+
+因此，计划中的构建骨架阶段应优先选定一个明确的 Forge 1.20.1 版本（例如官方 47.3.x 系列中的候选版本），对照其 MDK 的 Gradle Wrapper、ForgeGradle、Java toolchain 和 mappings 配置。候选版本仍须经过实际解析、编译和启动验证后，才可作为最低兼容版本声明。
+
+## 9. 审计状态与下一步门槛
+
+| 项目 | 当前状态 |
+|---|---|
+| README 功能范围整理 | 已整理；尚未逐项做运行回归 |
+| 仓库源码路径清点 | 已完成递归路径清点 |
+| Early 启动关键类样本阅读 | 已读取 `EarlyShelter`、`ShelterLocator`、`ShelterService` 等关键类的样本 |
+| 主源码 API 全量映射 | 未完成 |
+| 所有 Mixin 目标/描述符审计 | 未完成；目前只核对了配置清单与部分样本 |
+| Forge 47.x early 服务可行性 | 未验证，是首要门槛 |
+| ForgeGradle 构建与编译 | 未运行 |
+| 客户端/专用服务器运行测试 | 未运行 |
+
+**下一步顺序保持不变：先研究 Forge 47.x 的启动服务、候选模组扫描和嵌套 JAR 发现能力；并行继续逐个检查 early 文件与 Mixin 目标。只有找到可验证的加载器方案后，才进入大规模主源码 API 迁移。**
